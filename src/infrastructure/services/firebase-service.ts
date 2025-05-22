@@ -1,11 +1,15 @@
+
+// 1. ATUALIZAR: src/infrastructure/services/firebase-service.ts
 // src/infrastructure/services/firebase-service.ts
 import * as admin from 'firebase-admin';
 import { INotificationService } from '../../domain/interfaces/services/notification-service.interface';
+import { IDeviceTokenRepository } from '../../domain/interfaces/repositories/device-token-repository.interface';
 
 export class FirebaseService implements INotificationService {
   private messaging: admin.messaging.Messaging;
+  private deviceTokenRepository?: IDeviceTokenRepository;
 
-  constructor() {
+  constructor(deviceTokenRepository?: IDeviceTokenRepository) {
     // Inicializar Firebase Admin SDK
     if (!admin.apps.length) {
       admin.initializeApp({
@@ -18,6 +22,48 @@ export class FirebaseService implements INotificationService {
     }
     
     this.messaging = admin.messaging();
+    this.deviceTokenRepository = deviceTokenRepository;
+  }
+
+  // Validar formato do token FCM
+  private isValidFCMToken(token: string): boolean {
+    // Token FCM deve ter entre 140-200 caracteres e conter apenas caracteres válidos
+    const fcmTokenRegex = /^[A-Za-z0-9:_-]{140,200}$/;
+    
+    // Verificações básicas
+    if (!token || typeof token !== 'string') {
+      return false;
+    }
+    
+    // Token não deve conter espaços
+    if (token.includes(' ')) {
+      return false;
+    }
+    
+    // Verificar comprimento (tokens FCM típicos têm 140-200 caracteres)
+    if (token.length < 140 || token.length > 200) {
+      return false;
+    }
+    
+    // Verificar padrão de caracteres válidos
+    return fcmTokenRegex.test(token);
+  }
+
+  // Filtrar tokens válidos
+  private filterValidTokens(tokens: string[]): { valid: string[], invalid: string[] } {
+    const valid: string[] = [];
+    const invalid: string[] = [];
+    
+    tokens.forEach(token => {
+      if (this.isValidFCMToken(token)) {
+        valid.push(token);
+      } else {
+        invalid.push(token);
+        console.warn(`❌ Token FCM inválido detectado: ${token.substring(0, 50)}...`);
+      }
+    });
+    
+    return { valid, invalid };
   }
 
   async sendNotificationToTokens(
@@ -26,34 +72,105 @@ export class FirebaseService implements INotificationService {
     body: string, 
     data?: Record<string, string>
   ): Promise<void> {
-    if (tokens.length === 0) return;
+    if (tokens.length === 0) {
+      console.log('📭 Nenhum token fornecido para envio de notificações');
+      return;
+    }
 
-    console.log(`Sending notifications to ${tokens.length} devices`);
-
-    // Usar sendEach() que está disponível na sua versão
-    const messages = tokens.map(token => ({
-      notification: {
-        title,
-        body,
-      },
-      data: data || {},
-      token,
-    }));
-
-    try {
-      const response = await this.messaging.sendEach(messages);
+    console.log(`🔍 Validando ${tokens.length} tokens FCM...`);
+    
+    // Filtrar tokens válidos
+    const { valid: validTokens, invalid: invalidTokens } = this.filterValidTokens(tokens);
+    
+    if (invalidTokens.length > 0) {
+      console.warn(`⚠️ Encontrados ${invalidTokens.length} tokens inválidos que serão removidos`);
       
-      console.log(`Successfully sent notification: ${response.successCount} success, ${response.failureCount} failures`);
-      
-      // Processar tokens que falharam
-      if (response.failureCount > 0) {
-        const failedTokens = this.extractFailedTokens(tokens, response.responses);
-        if (failedTokens.length > 0) {
-          await this.handleFailedTokens(failedTokens);
+      // Remover tokens inválidos do banco de dados
+      if (this.deviceTokenRepository) {
+        try {
+          await this.deviceTokenRepository.removeTokens(invalidTokens);
+          console.log(`🗑️ Removidos ${invalidTokens.length} tokens inválidos do banco de dados`);
+        } catch (error) {
+          console.error('❌ Erro ao remover tokens inválidos:', error);
         }
       }
-    } catch (error) {
-      console.error('Error sending notifications:', error);
+    }
+
+    if (validTokens.length === 0) {
+      console.log('📭 Nenhum token válido para envio de notificações');
+      return;
+    }
+
+    console.log(`📱 Enviando notificações para ${validTokens.length} dispositivos válidos`);
+
+    // Dividir em lotes de 500 (limite do FCM)
+    const batchSize = 500;
+    const batches = [];
+    
+    for (let i = 0; i < validTokens.length; i += batchSize) {
+      batches.push(validTokens.slice(i, i + batchSize));
+    }
+
+    let totalSuccess = 0;
+    let totalFailure = 0;
+    const failedTokens: string[] = [];
+
+    for (const [batchIndex, batch] of batches.entries()) {
+      try {
+        console.log(`📦 Processando lote ${batchIndex + 1}/${batches.length} (${batch.length} tokens)`);
+        
+        const messages = batch.map(token => ({
+          notification: {
+            title,
+            body,
+          },
+          data: data || {},
+          token,
+          android: {
+            priority: 'high' as const,
+            notification: {
+              icon: 'ic_notification',
+              color: '#FF6B35',
+              sound: 'default',
+            },
+          },
+          apns: {
+            payload: {
+              aps: {
+                alert: {
+                  title,
+                  body,
+                },
+                sound: 'default',
+                badge: 1,
+              },
+            },
+          },
+        }));
+
+        const response = await this.messaging.sendEach(messages);
+        
+        totalSuccess += response.successCount;
+        totalFailure += response.failureCount;
+        
+        console.log(`✅ Lote ${batchIndex + 1}: ${response.successCount} sucessos, ${response.failureCount} falhas`);
+        
+        // Processar tokens que falharam
+        if (response.failureCount > 0) {
+          const batchFailedTokens = this.extractFailedTokens(batch, response.responses);
+          failedTokens.push(...batchFailedTokens);
+        }
+      } catch (error) {
+        console.error(`❌ Erro no lote ${batchIndex + 1}:`, error);
+        totalFailure += batch.length;
+      }
+    }
+
+    console.log(`📊 Resultado final: ${totalSuccess} sucessos, ${totalFailure} falhas`);
+    
+    // Remover tokens que falharam permanentemente
+    if (failedTokens.length > 0) {
+      await this.handleFailedTokens(failedTokens);
     }
   }
 
@@ -70,31 +187,33 @@ export class FirebaseService implements INotificationService {
       },
       data: data || {},
       topic,
+      android: {
+        priority: 'high',
+        notification: {
+          icon: 'ic_notification',
+          color: '#FF6B35',
+          sound: 'default',
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            alert: {
+              title,
+              body,
+            },
+            sound: 'default',
+            badge: 1,
+          },
+        },
+      },
     };
 
     try {
       const response = await this.messaging.send(message);
-      console.log('Successfully sent notification to topic:', response);
+      console.log('✅ Notificação enviada para tópico com sucesso:', response);
     } catch (error) {
-      console.error('Error sending notification to topic:', error);
-    }
-  }
-
-  async subscribeToTopic(token: string, topic: string): Promise<void> {
-    try {
-      await this.messaging.subscribeToTopic([token], topic);
-      console.log(`Successfully subscribed token to topic: ${topic}`);
-    } catch (error) {
-      console.error('Error subscribing to topic:', error);
-    }
-  }
-
-  async unsubscribeFromTopic(token: string, topic: string): Promise<void> {
-    try {
-      await this.messaging.unsubscribeFromTopic([token], topic);
-      console.log(`Successfully unsubscribed token from topic: ${topic}`);
-    } catch (error) {
-      console.error('Error unsubscribing from topic:', error);
+      console.error('❌ Erro ao enviar notificação para tópico:', error);
     }
   }
 
@@ -103,9 +222,11 @@ export class FirebaseService implements INotificationService {
     
     responses.forEach((response, index) => {
       if (!response.success && response.error) {
-        console.error(`Failed to send to token ${tokens[index]}:`, response.error);
+        const errorCode = response.error.code || response.error.code;
         
-        // Se o token é inválido, adicionar à lista para remoção
+        console.error(`❌ Falha no token ${tokens[index].substring(0, 20)}...: ${errorCode}`);
+        
+        // Remover tokens com erros permanentes
         if (this.isInvalidTokenError(response.error)) {
           failedTokens.push(tokens[index]);
         }
@@ -119,17 +240,56 @@ export class FirebaseService implements INotificationService {
     if (!error) return false;
     
     const errorCode = error.code || error.errorInfo?.code;
-    return errorCode === 'messaging/invalid-registration-token' ||
-           errorCode === 'messaging/registration-token-not-registered';
+    
+    // Códigos de erro que indicam tokens inválidos permanentemente
+    const invalidTokenErrors = [
+      'messaging/invalid-registration-token',
+      'messaging/registration-token-not-registered',
+      'messaging/invalid-argument',
+      'messaging/invalid-recipient'
+    ];
+    
+    return invalidTokenErrors.includes(errorCode);
   }
 
   private async handleFailedTokens(failedTokens: string[]): Promise<void> {
-    if (failedTokens.length === 0) return;
+    if (failedTokens.length === 0 || !this.deviceTokenRepository) return;
     
-    console.log(`Found ${failedTokens.length} invalid tokens to remove:`, failedTokens);
+    console.log(`🗑️ Removendo ${failedTokens.length} tokens inválidos/expirados do banco de dados...`);
     
-    // Aqui você pode remover os tokens inválidos do banco de dados
-    // Para isso, você precisaria injetar o deviceTokenRepository no construtor
-    // await this.deviceTokenRepository.removeTokens(failedTokens);
+    try {
+      await this.deviceTokenRepository.removeTokens(failedTokens);
+      console.log(`✅ Tokens inválidos removidos com sucesso`);
+    } catch (error) {
+      console.error('❌ Erro ao remover tokens inválidos:', error);
+    }
+  }
+
+  async subscribeToTopic(token: string, topic: string): Promise<void> {
+    if (!this.isValidFCMToken(token)) {
+      console.warn(`❌ Token inválido para subscrição no tópico ${topic}: ${token.substring(0, 50)}...`);
+      return;
+    }
+
+    try {
+      await this.messaging.subscribeToTopic([token], topic);
+      console.log(`✅ Token subscrito ao tópico: ${topic}`);
+    } catch (error) {
+      console.error('❌ Erro ao subscrever no tópico:', error);
+    }
+  }
+
+  async unsubscribeFromTopic(token: string, topic: string): Promise<void> {
+    if (!this.isValidFCMToken(token)) {
+      console.warn(`❌ Token inválido para desscrição do tópico ${topic}: ${token.substring(0, 50)}...`);
+      return;
+    }
+
+    try {
+      await this.messaging.unsubscribeFromTopic([token], topic);
+      console.log(`✅ Token dessinscrito do tópico: ${topic}`);
+    } catch (error) {
+      console.error('❌ Erro ao dessincrever do tópico:', error);
+    }
   }
 }

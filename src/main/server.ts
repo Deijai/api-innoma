@@ -74,14 +74,15 @@ async function bootstrap() {
     // Criar serviço de autenticação
     const authService = new AuthService(authConfig.jwtSecret, authConfig.jwtExpiresIn);
 
-    // NOVO: Configurar serviço de notificação (opcional)
+    // ATUALIZADO: Configurar serviço de notificação com deviceTokenRepository
     let notificationService = null;
     let sendPromotionNotificationUseCase = null;
     
     // Verificar se as credenciais do Firebase estão configuradas
     if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
       try {
-        notificationService = new FirebaseService();
+        // CORRIGIDO: Passar o deviceTokenRepository para o FirebaseService
+        notificationService = new FirebaseService(deviceTokenRepository);
         sendPromotionNotificationUseCase = new SendPromotionNotificationUseCase(
           deviceTokenRepository,
           notificationService,
@@ -89,12 +90,17 @@ async function bootstrap() {
           promotionRepository
         );
         console.log('✅ Firebase notification service initialized successfully');
+        console.log('🔧 Token validation and cleanup enabled');
       } catch (error) {
         console.warn('⚠️ Failed to initialize Firebase service:', error instanceof Error ? error.message : 'Unknown error');
         console.warn('📵 Push notifications will be disabled');
       }
     } else {
       console.log('ℹ️ Firebase credentials not configured in environment variables');
+      console.log('💡 To enable push notifications, configure:');
+      console.log('   - FIREBASE_PROJECT_ID');
+      console.log('   - FIREBASE_CLIENT_EMAIL'); 
+      console.log('   - FIREBASE_PRIVATE_KEY');
       console.log('📵 Push notifications are disabled');
     }
 
@@ -183,14 +189,26 @@ async function bootstrap() {
     // Set up routes
     app.use('/api', promotionRoutes(promotionController));
 
-    // Health check
+    // Health check - ATUALIZADO com mais informações
     app.get('/api/health', (req, res) => {
       res.status(200).json({ 
         status: 'UP',
         timestamp: new Date().toISOString(),
+        version: '1.0.0',
         notifications: {
           enabled: !!sendPromotionNotificationUseCase,
-          firebase: !!notificationService
+          firebase: !!notificationService,
+          tokenValidation: !!notificationService,
+          autoCleanup: !!notificationService
+        },
+        database: {
+          connected: !!database,
+          models: {
+            users: !!UserModel,
+            customers: !!CustomerModel,
+            favorites: !!FavoriteModel,
+            deviceTokens: !!DeviceTokenModel
+          }
         }
       });
     });
@@ -199,6 +217,46 @@ async function bootstrap() {
     app.use('/api/auth', authRoutes(authController));
     app.use('/api/mobile/favorites', favoriteRoutes(favoriteController, authService, customerRepository));
     app.use('/api/mobile/devices', deviceRoutes(registerDeviceUseCase, authService, customerRepository));
+
+    // NOVO: Endpoint para limpeza manual de tokens (útil para debug)
+    app.post('/api/admin/cleanup-tokens', webAuthMiddleware, async (req: Request, res: Response): Promise<void> => {
+      if (req.user?.role !== 'ADMIN') {
+        res.status(403).json({ message: 'Insufficient permissions' });
+        return;
+      }
+
+      if (!notificationService) {
+        res.status(503).json({ message: 'Firebase service not available' });
+        return;
+      }
+
+      try {
+        // Buscar todos os tokens
+        const allTokens = await DeviceTokenModel.findAll();
+        const tokenList = allTokens.map(t => t.token);
+        
+        console.log(`🧹 Admin cleanup: Validating ${tokenList.length} tokens...`);
+        
+        // O FirebaseService irá validar e limpar automaticamente
+        await notificationService.sendNotificationToTokens(
+          tokenList,
+          'Test Cleanup',
+          'This is a cleanup test',
+          { type: 'cleanup_test' }
+        );
+        
+        res.json({ 
+          message: 'Token cleanup completed',
+          tokensProcessed: tokenList.length 
+        });
+      } catch (error) {
+        console.error('❌ Admin cleanup error:', error);
+        res.status(500).json({ 
+          message: 'Cleanup failed', 
+          error: error instanceof Error ? error.message : 'Unknown error' 
+        });
+      }
+    });
 
     // Proteger rotas de administração com middleware JWT
     app.use('/api/admin', webAuthMiddleware, (req: Request, res: Response, next: NextFunction): void => {
@@ -228,8 +286,8 @@ async function bootstrap() {
 
     // Error handling - deve ser registrado após as rotas
     app.use((err: Error, req: Request, res: Response, next: NextFunction): void => {
-      console.error(err.stack);
-       res.status(500).json({
+      console.error('🚨 Server Error:', err.stack);
+      res.status(500).json({
         message: 'Internal server error',
         error: process.env.NODE_ENV === 'development' ? err.message : undefined
       });
@@ -238,28 +296,53 @@ async function bootstrap() {
 
     // Start server
     app.listen(port, () => {
-      console.log(`🚀 API Central server running at http://localhost:${port}`);
-      console.log(`🏥 Health check available at http://localhost:${port}/health`);
+      console.log('🚀 API Central server started successfully!');
+      console.log(`📡 Server running at http://localhost:${port}`);
+      console.log(`🏥 Health check available at http://localhost:${port}/api/health`);
+      console.log('');
       
+      // Status das funcionalidades
       if (sendPromotionNotificationUseCase) {
-        console.log(`🔔 Push notifications are ENABLED`);
+        console.log('🔔 Push notifications: ENABLED');
+        console.log('🔧 Token validation: ENABLED');
+        console.log('🧹 Auto cleanup: ENABLED');
       } else {
-        console.log(`📵 Push notifications are DISABLED`);
+        console.log('📵 Push notifications: DISABLED');
+        console.log('💡 Configure Firebase credentials to enable notifications');
       }
+      
+      console.log('');
+      console.log('📋 Available endpoints:');
+      console.log('   - POST /api/auth/register (Web panel user registration)');
+      console.log('   - POST /api/auth/login (Web panel user login)');
+      console.log('   - POST /api/auth/mobile/register (Mobile customer registration)');
+      console.log('   - POST /api/auth/mobile/login (Mobile customer login)');
+      console.log('   - POST /api/mobile/devices (Device token registration)');
+      console.log('   - POST /api/mobile/favorites (Add favorite)');
+      console.log('   - GET  /api/mobile/favorites (Get favorites)');
+      console.log('   - POST /api/promotions (Sync promotions)');
+      console.log('   - GET  /api/promotions/active (Get active promotions)');
+      console.log('   - POST /api/admin/cleanup-tokens (Manual token cleanup - Admin only)');
+      console.log('');
     });
 
     // Handle graceful shutdown
-    process.on('SIGINT', () => {
-      console.log('Shutting down server...');
+    const gracefulShutdown = (signal: string) => {
+      console.log(`📤 Received ${signal}. Shutting down gracefully...`);
+      
+      // Aqui você pode adicionar lógica de cleanup se necessário
+      // Por exemplo: fechar conexões de banco, parar jobs, etc.
+      
+      console.log('👋 Server shutdown complete');
       process.exit(0);
-    });
+    };
 
-    process.on('SIGTERM', () => {
-      console.log('Shutting down server...');
-      process.exit(0);
-    });
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
   } catch (error) {
-    console.error('Failed to start server:', error);
+    console.error('💥 Failed to start server:', error);
+    console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace available');
     process.exit(1);
   }
 }
