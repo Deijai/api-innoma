@@ -7,4 +7,7 @@ export interface IFavoriteRepository {
   findByCustomerId(customerId: string): Promise<Favorite[]>;
   save(favorite: Favorite): Promise<Favorite>;
   delete(id: string): Promise<boolean>;
+  
+  // NOVO: Método opcional para buscar favoritos por promoção
+  findByPromotionId?(promotionId: string): Promise<Favorite[]>;
 }

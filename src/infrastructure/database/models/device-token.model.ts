@@ -1,5 +1,6 @@
 // src/infrastructure/database/models/device-token.model.ts
 import { Model, DataTypes, Sequelize } from 'sequelize';
+import { CustomerModel } from './customer.model';
 
 export class DeviceTokenModel extends Model {
   public id!: string;
@@ -52,5 +53,12 @@ export class DeviceTokenModel extends Model {
         underscored: true
       }
     );
+  }
+
+  static associate(): void {
+    DeviceTokenModel.belongsTo(CustomerModel, {
+      foreignKey: 'customerId',
+      as: 'customer'
+    });
   }
 }

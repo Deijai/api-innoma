@@ -14,9 +14,7 @@ import { PromotionController } from '../infrastructure/http/controllers/promotio
 import promotionRoutes from './routes/promotion-routes';
 import { errorMiddleware } from './middlewares/error-middleware';
 
-
-// Primeiro, importações adicionais:
-// Adicione estas importações ao topo do arquivo main/server.ts
+// Importações para autenticação
 import { authConfig } from './config/auth-config';
 import { AuthService } from '../infrastructure/services/auth-service';
 import { UserRepository } from '../infrastructure/repositories/user-repository';
@@ -41,6 +39,10 @@ import { CustomerModel } from '../infrastructure/database/models/customer.model'
 import { FavoriteModel } from '../infrastructure/database/models/favorite.model';
 import { DeviceTokenModel } from '../infrastructure/database/models/device-token.model';
 
+// NOVO: Importações para notificações
+import { FirebaseService } from '../infrastructure/services/firebase-service';
+import { SendPromotionNotificationUseCase } from '../application/use-cases/notifications/send-promotion-notification.use-case';
+
 async function bootstrap() {
   try {
     const app = express();
@@ -51,18 +53,17 @@ async function bootstrap() {
     await database.connect();
     await database.sync(process.env.NODE_ENV === 'development' && process.env.FORCE_DB_SYNC === 'true');
 
-
     // Inicializar modelos do Sequelize para autenticação
     UserModel.initialize(database.getSequelize());
     CustomerModel.initialize(database.getSequelize());
     FavoriteModel.initialize(database.getSequelize());
     DeviceTokenModel.initialize(database.getSequelize());
+    DeviceTokenModel.associate?.();
 
     // Create repositories
     const promotionRepository = new PromotionRepository();
     const storeRepository = new StoreRepository();
     const companyRepository = new CompanyRepository();
-
 
     // Criar repositórios para autenticação
     const userRepository = new UserRepository();
@@ -73,11 +74,36 @@ async function bootstrap() {
     // Criar serviço de autenticação
     const authService = new AuthService(authConfig.jwtSecret, authConfig.jwtExpiresIn);
 
-    // Create use cases
+    // NOVO: Configurar serviço de notificação (opcional)
+    let notificationService = null;
+    let sendPromotionNotificationUseCase = null;
+    
+    // Verificar se as credenciais do Firebase estão configuradas
+    if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+      try {
+        notificationService = new FirebaseService();
+        sendPromotionNotificationUseCase = new SendPromotionNotificationUseCase(
+          deviceTokenRepository,
+          notificationService,
+          favoriteRepository,
+          promotionRepository
+        );
+        console.log('✅ Firebase notification service initialized successfully');
+      } catch (error) {
+        console.warn('⚠️ Failed to initialize Firebase service:', error instanceof Error ? error.message : 'Unknown error');
+        console.warn('📵 Push notifications will be disabled');
+      }
+    } else {
+      console.log('ℹ️ Firebase credentials not configured in environment variables');
+      console.log('📵 Push notifications are disabled');
+    }
+
+    // Create use cases - ATUALIZADO: incluir notificações opcionais
     const syncPromotionsUseCase = new SyncPromotionsUseCase(
       promotionRepository,
       storeRepository,
-      companyRepository
+      companyRepository,
+      sendPromotionNotificationUseCase! // Pode ser null se Firebase não estiver configurado
     );
 
     const getStorePromotionsUseCase = new GetStorePromotionsUseCase(
@@ -126,7 +152,7 @@ async function bootstrap() {
       deviceTokenRepository
     );
 
-    // Create controller
+    // Create controllers
     const promotionController = new PromotionController(
       syncPromotionsUseCase,
       getStorePromotionsUseCase,
@@ -159,9 +185,15 @@ async function bootstrap() {
 
     // Health check
     app.get('/health', (req, res) => {
-      res.status(200).json({ status: 'UP' });
+      res.status(200).json({ 
+        status: 'UP',
+        timestamp: new Date().toISOString(),
+        notifications: {
+          enabled: !!sendPromotionNotificationUseCase,
+          firebase: !!notificationService
+        }
+      });
     });
-
 
     // Configurar rotas de autenticação
     app.use('/api/auth', authRoutes(authController));
@@ -194,12 +226,26 @@ async function bootstrap() {
       next();
     });
 
-    // Error handling
-    app.use(errorMiddleware);
+    // Error handling - deve ser registrado após as rotas
+    app.use((err: Error, req: Request, res: Response, next: NextFunction): void => {
+      console.error(err.stack);
+       res.status(500).json({
+        message: 'Internal server error',
+        error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      });
+      return;
+    });
 
     // Start server
     app.listen(port, () => {
-      console.log(`API Central server running at http://localhost:${port}`);
+      console.log(`🚀 API Central server running at http://localhost:${port}`);
+      console.log(`🏥 Health check available at http://localhost:${port}/health`);
+      
+      if (sendPromotionNotificationUseCase) {
+        console.log(`🔔 Push notifications are ENABLED`);
+      } else {
+        console.log(`📵 Push notifications are DISABLED`);
+      }
     });
 
     // Handle graceful shutdown
