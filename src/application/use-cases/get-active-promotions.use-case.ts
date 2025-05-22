@@ -24,13 +24,13 @@ export class GetActivePromotionsUseCase {
           description: promo.description,
           originalPrice: promo.originalPrice,
           promotionalPrice: promo.promotionalPrice,
-          startDate: promo.startDate.toISOString(),
-          endDate: promo.endDate.toISOString(),
+          startDate: new Date(promo.startDate).toISOString(),
+          endDate: new Date(promo.endDate).toISOString(),
           productId: promo.productId,
           storeId: promo.storeId,
           active: promo.active,
-          createdAt: promo.createdAt.toISOString(),
-          updatedAt: promo.updatedAt.toISOString(),
+          createdAt: promo.createdAt?.toISOString(),
+          updatedAt: promo.updatedAt?.toISOString(),
           // You can add store and company details here if needed for the API
         };
       })
