@@ -6,4 +6,9 @@ export interface IDeviceTokenRepository {
   findByCustomerId(customerId: string): Promise<DeviceToken[]>;
   save(deviceToken: DeviceToken): Promise<DeviceToken>;
   delete(id: string): Promise<boolean>;
+  // NOVO: Método para buscar todos os tokens ativos
+  findAllActiveTokens(): Promise<DeviceToken[]>;
+  
+  // NOVO: Método para remover tokens inválidos
+  removeTokens(tokens: string[]): Promise<void>;
 }

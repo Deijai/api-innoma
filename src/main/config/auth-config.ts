@@ -1,3 +1,4 @@
+
 // src/main/config/auth-config.ts
 import dotenv from 'dotenv';
 

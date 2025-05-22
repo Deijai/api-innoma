@@ -7,12 +7,14 @@ import { SyncResponseDTO } from '../dto/sync-response-dto';
 import { Promotion } from '../../domain/entities/promotion.entity';
 import { Store } from '../../domain/entities/store.entity';
 import { Company } from '../../domain/entities/company.entity';
+import { SendPromotionNotificationUseCase } from './notifications/send-promotion-notification.use-case';
 
 export class SyncPromotionsUseCase {
   constructor(
     private readonly promotionRepository: IPromotionRepository,
     private readonly storeRepository: IStoreRepository,
     private readonly companyRepository: ICompanyRepository,
+     private readonly sendPromotionNotificationUseCase: SendPromotionNotificationUseCase
   ) {}
 
   async execute(request: SyncRequestDTO): Promise<SyncResponseDTO> {
@@ -75,6 +77,13 @@ export class SyncPromotionsUseCase {
 
       // 4. Save promotions
       const savedPromotions = await this.promotionRepository.saveMany(promotions);
+
+       // NOVO: Enviar notificações push
+      if (savedPromotions.length > 0) {
+        // Executar notificações de forma assíncrona para não afetar a resposta
+        this.sendPromotionNotificationUseCase.execute(savedPromotions, store)
+          .catch(error => console.error('Failed to send notifications:', error));
+      }
 
       // 5. Return response
       return {

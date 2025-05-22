@@ -6,11 +6,11 @@ import { DeviceTokenModel } from '../database/models/device-token.model';
 export class DeviceTokenRepository implements IDeviceTokenRepository {
   async findById(id: string): Promise<DeviceToken | null> {
     const deviceTokenModel = await DeviceTokenModel.findByPk(id);
-    
+
     if (!deviceTokenModel) {
       return null;
     }
-    
+
     return this.toEntity(deviceTokenModel);
   }
 
@@ -18,7 +18,7 @@ export class DeviceTokenRepository implements IDeviceTokenRepository {
     const deviceTokenModels = await DeviceTokenModel.findAll({
       where: { customerId }
     });
-    
+
     return deviceTokenModels.map(this.toEntity);
   }
 
@@ -31,7 +31,7 @@ export class DeviceTokenRepository implements IDeviceTokenRepository {
       createdAt: deviceToken.createdAt,
       updatedAt: deviceToken.updatedAt
     });
-    
+
     return this.toEntity(deviceTokenModel);
   }
 
@@ -39,8 +39,36 @@ export class DeviceTokenRepository implements IDeviceTokenRepository {
     const result = await DeviceTokenModel.destroy({
       where: { id }
     });
-    
+
     return result > 0;
+  }
+
+  // NOVO: Buscar todos os tokens ativos
+  async findAllActiveTokens(): Promise<DeviceToken[]> {
+    const deviceTokenModels = await DeviceTokenModel.findAll({
+      include: [
+        {
+          association: 'customer', // Assumindo que você tem associação definida
+          where: { active: true },
+          required: true
+        }
+      ]
+    });
+
+    return deviceTokenModels.map(this.toEntity);
+  }
+
+  // NOVO: Remover tokens inválidos
+  async removeTokens(tokens: string[]): Promise<void> {
+    if (tokens.length === 0) return;
+
+    await DeviceTokenModel.destroy({
+      where: {
+        token: tokens
+      }
+    });
+
+    console.log(`Removed ${tokens.length} invalid device tokens`);
   }
 
   private toEntity(model: DeviceTokenModel): DeviceToken {
