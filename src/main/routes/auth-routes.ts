@@ -1,4 +1,4 @@
-// src/main/routes/auth-routes.ts
+// src/main/routes/auth-routes.ts - VERSÃO ATUALIZADA
 import { Router } from 'express';
 import { AuthController } from '../../infrastructure/http/controllers/auth-controller';
 import { body } from 'express-validator';
@@ -52,6 +52,12 @@ export default (controller: AuthController): Router => {
     '/mobile/login',
     validateRequest(loginValidation),
     (req, res) => controller.loginCustomer(req, res)
+  );
+
+  // NOVO: Token Validation Route (funciona para ambos: web e mobile)
+  router.post(
+    '/validate-token',
+    (req, res) => controller.validateToken(req, res)
   );
 
   return router;

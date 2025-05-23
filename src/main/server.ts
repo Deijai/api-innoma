@@ -43,6 +43,8 @@ import { DeviceTokenModel } from '../infrastructure/database/models/device-token
 import { ExpoPushService } from '../infrastructure/services/expo-push-service';
 import { NotificationSchedulerService } from '../infrastructure/services/notification-scheduler.service';
 import { SendPromotionNotificationUseCase } from '../application/use-cases/notifications/send-promotion-notification.use-case';
+import { ValidateTokenUseCase } from '../application/use-cases/auth/validate-token.use-case';
+import { GetPromotionDetailsUseCase } from '../application/use-cases/get-promotion-details.use-case';
 
 async function bootstrap() {
   try {
@@ -156,6 +158,13 @@ async function bootstrap() {
       companyRepository
     );
 
+    // NOVO: Adicionar GetPromotionDetailsUseCase
+    const getPromotionDetailsUseCase = new GetPromotionDetailsUseCase(
+      promotionRepository,
+      storeRepository,
+      companyRepository
+    );
+
     // Criar casos de uso para autenticação
     const registerUserUseCase = new RegisterUserUseCase(
       userRepository,
@@ -178,6 +187,13 @@ async function bootstrap() {
       authService
     );
 
+    // NOVO: Adicionar ValidateTokenUseCase
+    const validateTokenUseCase = new ValidateTokenUseCase(
+      userRepository,
+      customerRepository,
+      authService
+    );
+
     const addFavoriteUseCase = new AddFavoriteUseCase(
       favoriteRepository,
       promotionRepository
@@ -191,18 +207,21 @@ async function bootstrap() {
       deviceTokenRepository
     );
 
-    // Create controllers
+    // ATUALIZAR: PromotionController com o novo use case
     const promotionController = new PromotionController(
       syncPromotionsUseCase,
       getStorePromotionsUseCase,
-      getActivePromotionsUseCase
+      getActivePromotionsUseCase,
+      getPromotionDetailsUseCase  // <- ADICIONADO
     );
 
+    // ATUALIZAR: AuthController com o novo use case
     const authController = new AuthController(
       registerUserUseCase,
       loginUserUseCase,
       registerCustomerUseCase,
-      loginCustomerUseCase
+      loginCustomerUseCase,
+      validateTokenUseCase  // <- ADICIONADO
     );
 
     const favoriteController = new FavoriteController(
