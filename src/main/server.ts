@@ -1,4 +1,4 @@
-// src/main/server.ts
+// src/main/server.ts - VERSÃO ATUALIZADA PARA EXPO
 import express, {Request, Response, NextFunction} from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -39,8 +39,9 @@ import { CustomerModel } from '../infrastructure/database/models/customer.model'
 import { FavoriteModel } from '../infrastructure/database/models/favorite.model';
 import { DeviceTokenModel } from '../infrastructure/database/models/device-token.model';
 
-// NOVO: Importações para notificações
-import { FirebaseService } from '../infrastructure/services/firebase-service';
+// ATUALIZADO: Importações para Expo Push Notifications
+import { ExpoPushService } from '../infrastructure/services/expo-push-service';
+import { NotificationSchedulerService } from '../infrastructure/services/notification-scheduler.service';
 import { SendPromotionNotificationUseCase } from '../application/use-cases/notifications/send-promotion-notification.use-case';
 
 async function bootstrap() {
@@ -48,12 +49,14 @@ async function bootstrap() {
     const app = express();
     const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
+    console.log('🚀 Iniciando API Central com Expo Push Notifications...');
+
     // Connect to database
     const database = new SequelizeDatabase(databaseConfig);
     await database.connect();
     await database.sync(process.env.NODE_ENV === 'development' && process.env.FORCE_DB_SYNC === 'true');
 
-    // Inicializar modelos do Sequelize para autenticação
+    // Inicializar modelos do Sequelize
     UserModel.initialize(database.getSequelize());
     CustomerModel.initialize(database.getSequelize());
     FavoriteModel.initialize(database.getSequelize());
@@ -64,8 +67,6 @@ async function bootstrap() {
     const promotionRepository = new PromotionRepository();
     const storeRepository = new StoreRepository();
     const companyRepository = new CompanyRepository();
-
-    // Criar repositórios para autenticação
     const userRepository = new UserRepository();
     const customerRepository = new CustomerRepository();
     const favoriteRepository = new FavoriteRepository();
@@ -74,42 +75,74 @@ async function bootstrap() {
     // Criar serviço de autenticação
     const authService = new AuthService(authConfig.jwtSecret, authConfig.jwtExpiresIn);
 
-    // ATUALIZADO: Configurar serviço de notificação com deviceTokenRepository
-    let notificationService = null;
-    let sendPromotionNotificationUseCase = null;
+    // NOVO: Configurar Expo Push Service
+    let expoPushService: ExpoPushService | null = null;
+    let notificationScheduler: NotificationSchedulerService | null = null;
+    let sendPromotionNotificationUseCase: SendPromotionNotificationUseCase | null = null;
     
-    // Verificar se as credenciais do Firebase estão configuradas
-    if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    // Verificar se o Expo Access Token está configurado
+    if (process.env.EXPO_ACCESS_TOKEN) {
       try {
-        // CORRIGIDO: Passar o deviceTokenRepository para o FirebaseService
-        notificationService = new FirebaseService(deviceTokenRepository);
-        sendPromotionNotificationUseCase = new SendPromotionNotificationUseCase(
-          deviceTokenRepository,
-          notificationService,
-          favoriteRepository,
-          promotionRepository
-        );
-        console.log('✅ Firebase notification service initialized successfully');
-        console.log('🔧 Token validation and cleanup enabled');
+        console.log('🔧 Configurando Expo Push Service...');
+        expoPushService = new ExpoPushService(deviceTokenRepository);
+        
+        // Verificar se o serviço está funcionando
+        const isHealthy = await expoPushService.healthCheck();
+        
+        if (isHealthy) {
+          // Criar serviço de notificações para promoções
+          sendPromotionNotificationUseCase = new SendPromotionNotificationUseCase(
+            deviceTokenRepository,
+            expoPushService,
+            favoriteRepository,
+            promotionRepository
+          );
+
+          // Criar e iniciar scheduler
+          notificationScheduler = new NotificationSchedulerService(
+            deviceTokenRepository,
+            expoPushService
+          );
+          
+          // Iniciar scheduler apenas em produção ou se explicitamente configurado
+          if (process.env.NODE_ENV === 'production' || process.env.START_SCHEDULER === 'true') {
+            notificationScheduler.startScheduler();
+          }
+
+          console.log('✅ Expo Push Service inicializado com sucesso');
+          console.log('🔔 Push notifications: HABILITADAS');
+          console.log('🔧 Validação de tokens: HABILITADA');
+          console.log('🧹 Limpeza automática: HABILITADA');
+          
+          if (process.env.PUSH_NOTIFICATIONS_DEBUG === 'true') {
+            console.log('🐛 Debug mode: HABILITADO');
+          }
+        } else {
+          console.warn('⚠️ Expo Push Service health check falhou');
+          expoPushService = null;
+        }
       } catch (error) {
-        console.warn('⚠️ Failed to initialize Firebase service:', error instanceof Error ? error.message : 'Unknown error');
-        console.warn('📵 Push notifications will be disabled');
+        console.error('❌ Falha ao inicializar Expo Push Service:', error instanceof Error ? error.message : 'Erro desconhecido');
+        console.warn('📵 Push notifications serão desabilitadas');
+        expoPushService = null;
+        sendPromotionNotificationUseCase = null; // ADICIONADO: garantir que seja null
+        notificationScheduler = null; // ADICIONADO: garantir que seja null
       }
     } else {
-      console.log('ℹ️ Firebase credentials not configured in environment variables');
-      console.log('💡 To enable push notifications, configure:');
-      console.log('   - FIREBASE_PROJECT_ID');
-      console.log('   - FIREBASE_CLIENT_EMAIL'); 
-      console.log('   - FIREBASE_PRIVATE_KEY');
-      console.log('📵 Push notifications are disabled');
+      console.log('ℹ️ EXPO_ACCESS_TOKEN não configurado');
+      console.log('💡 Para habilitar push notifications:');
+      console.log('   1. Acesse https://expo.dev/');
+      console.log('   2. Vá em Account Settings > Access Tokens');
+      console.log('   3. Gere um novo token e configure EXPO_ACCESS_TOKEN no .env');
+      console.log('📵 Push notifications: DESABILITADAS');
     }
 
-    // Create use cases - ATUALIZADO: incluir notificações opcionais
+    // Create use cases
     const syncPromotionsUseCase = new SyncPromotionsUseCase(
       promotionRepository,
       storeRepository,
       companyRepository,
-      sendPromotionNotificationUseCase! // Pode ser null se Firebase não estiver configurado
+      sendPromotionNotificationUseCase // Pode ser null se Expo não estiver configurado
     );
 
     const getStorePromotionsUseCase = new GetStorePromotionsUseCase(
@@ -184,81 +217,185 @@ async function bootstrap() {
     // Set up middleware
     app.use(helmet());
     app.use(cors());
-    app.use(express.json());
+    app.use(express.json({ limit: '10mb' }));
 
     // Set up routes
     app.use('/api', promotionRoutes(promotionController));
-
-    // Health check - ATUALIZADO com mais informações
-    app.get('/api/health', (req, res) => {
-      res.status(200).json({ 
-        status: 'UP',
-        timestamp: new Date().toISOString(),
-        version: '1.0.0',
-        notifications: {
-          enabled: !!sendPromotionNotificationUseCase,
-          firebase: !!notificationService,
-          tokenValidation: !!notificationService,
-          autoCleanup: !!notificationService
-        },
-        database: {
-          connected: !!database,
-          models: {
-            users: !!UserModel,
-            customers: !!CustomerModel,
-            favorites: !!FavoriteModel,
-            deviceTokens: !!DeviceTokenModel
-          }
-        }
-      });
-    });
-
-    // Configurar rotas de autenticação
     app.use('/api/auth', authRoutes(authController));
     app.use('/api/mobile/favorites', favoriteRoutes(favoriteController, authService, customerRepository));
     app.use('/api/mobile/devices', deviceRoutes(registerDeviceUseCase, authService, customerRepository));
 
-    // NOVO: Endpoint para limpeza manual de tokens (útil para debug)
-    app.post('/api/admin/cleanup-tokens', webAuthMiddleware, async (req: Request, res: Response): Promise<void> => {
+    // NOVO: Health check expandido
+    app.get('/api/health', async (req, res) => {
+      try {
+        // Obter estatísticas se disponível
+        let deviceStats = null;
+        if (deviceTokenRepository.getGeneralStats) {
+          deviceStats = await deviceTokenRepository.getGeneralStats();
+        }
+
+        // Obter status do scheduler
+        let schedulerStatus = null;
+        if (notificationScheduler) {
+          schedulerStatus = notificationScheduler.getSchedulerStatus();
+        }
+
+        // Obter stats do Expo service
+        let expoStats = null;
+        if (expoPushService && expoPushService.getServiceStats) {
+          expoStats = await expoPushService.getServiceStats();
+        }
+
+        res.status(200).json({ 
+          status: 'UP',
+          timestamp: new Date().toISOString(),
+          version: '1.0.0',
+          environment: process.env.NODE_ENV || 'development',
+          services: {
+            database: {
+              connected: true,
+              models: ['users', 'customers', 'favorites', 'deviceTokens', 'promotions', 'stores', 'companies']
+            },
+            notifications: {
+              service: 'expo-push-notifications',
+              enabled: !!expoPushService,
+              healthCheck: expoPushService ? await expoPushService.healthCheck() : false,
+              stats: expoStats
+            },
+            scheduler: {
+              enabled: !!notificationScheduler,
+              status: schedulerStatus
+            }
+          },
+          statistics: deviceStats,
+          configuration: {
+            maxDevicesPerCustomer: parseInt(process.env.MAX_DEVICES_PER_CUSTOMER || '10'),
+            tokenCleanupDays: parseInt(process.env.TOKEN_CLEANUP_DAYS || '90'),
+            debugMode: process.env.PUSH_NOTIFICATIONS_DEBUG === 'true'
+          }
+        });
+      } catch (error) {
+        console.error('❌ Erro no health check:', error);
+        res.status(500).json({
+          status: 'DOWN',
+          error: error instanceof Error ? error.message : 'Unknown error',
+          timestamp: new Date().toISOString()
+        });
+      }
+    });
+
+    // NOVO: Endpoints administrativos para notificações
+    app.post('/api/admin/notifications/test', webAuthMiddleware, async (req: Request, res: Response): Promise<void> => {
       if (req.user?.role !== 'ADMIN') {
         res.status(403).json({ message: 'Insufficient permissions' });
         return;
       }
 
-      if (!notificationService) {
-        res.status(503).json({ message: 'Firebase service not available' });
+      if (!expoPushService) {
+        res.status(503).json({ 
+          success: false,
+          message: 'Expo Push Service not available',
+          code: 'SERVICE_UNAVAILABLE'
+        });
         return;
       }
 
       try {
-        // Buscar todos os tokens
-        const allTokens = await DeviceTokenModel.findAll();
-        const tokenList = allTokens.map(t => t.token);
+        const result = notificationScheduler 
+          ? await notificationScheduler.sendTestNotification()
+          : { success: false, tokensUsed: 0 };
         
-        console.log(`🧹 Admin cleanup: Validating ${tokenList.length} tokens...`);
-        
-        // O FirebaseService irá validar e limpar automaticamente
-        await notificationService.sendNotificationToTokens(
-          tokenList,
-          'Test Cleanup',
-          'This is a cleanup test',
-          { type: 'cleanup_test' }
-        );
-        
-        res.json({ 
-          message: 'Token cleanup completed',
-          tokensProcessed: tokenList.length 
+        res.json({
+          success: result.success,
+          message: result.success 
+            ? `Test notification sent to ${result.tokensUsed} devices` 
+            : 'Failed to send test notification',
+          data: result
         });
       } catch (error) {
-        console.error('❌ Admin cleanup error:', error);
+        console.error('❌ Erro ao enviar notificação de teste:', error);
         res.status(500).json({ 
-          message: 'Cleanup failed', 
-          error: error instanceof Error ? error.message : 'Unknown error' 
+          success: false,
+          message: 'Error sending test notification',
+          error: error instanceof Error ? error.message : 'Unknown error'
         });
       }
     });
 
-    // Proteger rotas de administração com middleware JWT
+    app.post('/api/admin/notifications/cleanup', webAuthMiddleware, async (req: Request, res: Response): Promise<void> => {
+      if (req.user?.role !== 'ADMIN') {
+        res.status(403).json({ message: 'Insufficient permissions' });
+        return;
+      }
+
+      if (!notificationScheduler) {
+        res.status(503).json({ 
+          success: false,
+          message: 'Notification Scheduler not available',
+          code: 'SERVICE_UNAVAILABLE'
+        });
+        return;
+      }
+
+      try {
+        const result = await notificationScheduler.runImmediateCleanup();
+        
+        res.json({
+          success: true,
+          message: 'Cleanup completed successfully',
+          data: result
+        });
+      } catch (error) {
+        console.error('❌ Erro na limpeza administrativa:', error);
+        res.status(500).json({ 
+          success: false,
+          message: 'Error during cleanup',
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    app.get('/api/admin/notifications/stats', webAuthMiddleware, async (req: Request, res: Response): Promise<void> => {
+      if (req.user?.role !== 'ADMIN') {
+        res.status(403).json({ message: 'Insufficient permissions' });
+        return;
+      }
+
+      try {
+        let stats = null;
+        if (deviceTokenRepository.getGeneralStats) {
+          stats = await deviceTokenRepository.getGeneralStats();
+        }
+
+        let schedulerStatus = null;
+        if (notificationScheduler) {
+          schedulerStatus = notificationScheduler.getSchedulerStatus();
+        }
+
+        res.json({
+          success: true,
+          message: 'Statistics retrieved successfully',
+          data: {
+            deviceTokens: stats,
+            scheduler: schedulerStatus,
+            service: {
+              type: 'expo-push-notifications',
+              healthy: expoPushService ? await expoPushService.healthCheck() : false,
+              configured: !!expoPushService
+            }
+          }
+        });
+      } catch (error) {
+        console.error('❌ Erro ao obter estatísticas:', error);
+        res.status(500).json({ 
+          success: false,
+          message: 'Error retrieving statistics',
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+    });
+
+    // Proteger rotas de administração
     app.use('/api/admin', webAuthMiddleware, (req: Request, res: Response, next: NextFunction): void => {
       if (req.user?.role !== 'ADMIN') {
         res.status(403).json({ message: 'Insufficient permissions' });
@@ -267,24 +404,7 @@ async function bootstrap() {
       next();
     });
 
-    // Proteger rotas de loja com middleware JWT
-    app.use('/api/stores/:storeId/manage', webAuthMiddleware, (req: Request, res: Response, next: NextFunction): void => {
-      const { storeId } = req.params;
-
-      // Allow admin to access any store
-      if (req.user?.role === 'ADMIN') {
-        return next();
-      }
-
-      if (req.user?.storeId !== storeId) {
-        res.status(403).json({ message: 'Insufficient permissions' });
-        return;
-      }
-
-      next();
-    });
-
-    // Error handling - deve ser registrado após as rotas
+    // Error handling
     app.use((err: Error, req: Request, res: Response, next: NextFunction): void => {
       console.error('🚨 Server Error:', err.stack);
       res.status(500).json({
@@ -296,52 +416,80 @@ async function bootstrap() {
 
     // Start server
     app.listen(port, () => {
-      console.log('🚀 API Central server started successfully!');
-      console.log(`📡 Server running at http://localhost:${port}`);
-      console.log(`🏥 Health check available at http://localhost:${port}/api/health`);
+      console.log('');
+      console.log('🎉 API Central inicializada com sucesso!');
+      console.log(`📡 Servidor rodando em http://localhost:${port}`);
+      console.log(`🏥 Health check disponível em http://localhost:${port}/api/health`);
       console.log('');
       
       // Status das funcionalidades
-      if (sendPromotionNotificationUseCase) {
-        console.log('🔔 Push notifications: ENABLED');
-        console.log('🔧 Token validation: ENABLED');
-        console.log('🧹 Auto cleanup: ENABLED');
+      console.log('📋 Status dos Serviços:');
+      if (expoPushService) {
+        console.log('  🔔 Push Notifications: ✅ HABILITADAS (Expo)');
+        console.log('  🔧 Validação de Tokens: ✅ HABILITADA');
+        console.log('  🧹 Limpeza Automática: ✅ HABILITADA');
+        
+        if (notificationScheduler?.getSchedulerStatus().isRunning) {
+          console.log('  ⏰ Agendador: ✅ ATIVO');
+        } else {
+          console.log('  ⏰ Agendador: ⏸️ INATIVO (configure START_SCHEDULER=true)');
+        }
       } else {
-        console.log('📵 Push notifications: DISABLED');
-        console.log('💡 Configure Firebase credentials to enable notifications');
+        console.log('  📵 Push Notifications: ❌ DESABILITADAS');
+        console.log('  💡 Configure EXPO_ACCESS_TOKEN para habilitar');
       }
       
       console.log('');
-      console.log('📋 Available endpoints:');
-      console.log('   - POST /api/auth/register (Web panel user registration)');
-      console.log('   - POST /api/auth/login (Web panel user login)');
-      console.log('   - POST /api/auth/mobile/register (Mobile customer registration)');
-      console.log('   - POST /api/auth/mobile/login (Mobile customer login)');
-      console.log('   - POST /api/mobile/devices (Device token registration)');
-      console.log('   - POST /api/mobile/favorites (Add favorite)');
-      console.log('   - GET  /api/mobile/favorites (Get favorites)');
-      console.log('   - POST /api/promotions (Sync promotions)');
-      console.log('   - GET  /api/promotions/active (Get active promotions)');
-      console.log('   - POST /api/admin/cleanup-tokens (Manual token cleanup - Admin only)');
+      console.log('🌐 Endpoints Principais:');
+      console.log('  📱 Mobile App:');
+      console.log('    - POST /api/auth/mobile/register');
+      console.log('    - POST /api/auth/mobile/login');
+      console.log('    - POST /api/mobile/devices/register');
+      console.log('    - GET  /api/mobile/devices');
+      console.log('    - POST /api/mobile/favorites');
+      console.log('    - GET  /api/promotions/active');
+      console.log('');
+      console.log('  🖥️ Web Panel:');
+      console.log('    - POST /api/auth/register');
+      console.log('    - POST /api/auth/login');
+      console.log('    - POST /api/promotions');
+      console.log('    - GET  /api/stores/:id/promotions');
+      console.log('');
+      console.log('  👨‍💼 Admin:');
+      console.log('    - POST /api/admin/notifications/test');
+      console.log('    - POST /api/admin/notifications/cleanup');
+      console.log('    - GET  /api/admin/notifications/stats');
       console.log('');
     });
 
     // Handle graceful shutdown
-    const gracefulShutdown = (signal: string) => {
-      console.log(`📤 Received ${signal}. Shutting down gracefully...`);
+    const gracefulShutdown = async (signal: string) => {
+      console.log(`📤 Recebido ${signal}. Encerrando graciosamente...`);
       
-      // Aqui você pode adicionar lógica de cleanup se necessário
-      // Por exemplo: fechar conexões de banco, parar jobs, etc.
-      
-      console.log('👋 Server shutdown complete');
-      process.exit(0);
+      try {
+        // Parar scheduler se estiver rodando
+        if (notificationScheduler) {
+          console.log('⏰ Parando notification scheduler...');
+          notificationScheduler.stopScheduler();
+        }
+        
+        // Fechar conexão com o banco
+        console.log('🗄️ Fechando conexão com banco de dados...');
+        await database.getSequelize().close();
+        
+        console.log('👋 Servidor encerrado com sucesso');
+        process.exit(0);
+      } catch (error) {
+        console.error('❌ Erro durante encerramento:', error);
+        process.exit(1);
+      }
     };
 
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
   } catch (error) {
-    console.error('💥 Failed to start server:', error);
+    console.error('💥 Falha ao iniciar servidor:', error);
     console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace available');
     process.exit(1);
   }

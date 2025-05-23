@@ -1,4 +1,4 @@
-// src/application/use-cases/sync-promotions.use-case.ts
+// src/application/use-cases/sync-promotions.use-case.ts - VERSÃO CORRIGIDA
 import { IPromotionRepository } from '../../domain/interfaces/repositories/promotion-repository.interface';
 import { IStoreRepository } from '../../domain/interfaces/repositories/store-repository.interface';
 import { ICompanyRepository } from '../../domain/interfaces/repositories/company-repository.interface';
@@ -14,11 +14,13 @@ export class SyncPromotionsUseCase {
     private readonly promotionRepository: IPromotionRepository,
     private readonly storeRepository: IStoreRepository,
     private readonly companyRepository: ICompanyRepository,
-     private readonly sendPromotionNotificationUseCase: SendPromotionNotificationUseCase
+    private readonly sendPromotionNotificationUseCase: SendPromotionNotificationUseCase | null // Pode ser null
   ) {}
 
   async execute(request: SyncRequestDTO): Promise<SyncResponseDTO> {
     try {
+      console.log('🔄 Iniciando sincronização de promoções...');
+      
       // 1. Get or create company
       let company = await this.companyRepository.findByCnpj(request.company.cnpj);
       
@@ -34,6 +36,9 @@ export class SyncPromotionsUseCase {
             new Date()
           )
         );
+        console.log('✅ Empresa criada:', company.name);
+      } else {
+        console.log('ℹ️ Empresa encontrada:', company.name);
       }
 
       // 2. Get or create store
@@ -55,6 +60,9 @@ export class SyncPromotionsUseCase {
             new Date()
           )
         );
+        console.log('✅ Loja criada:', store.name);
+      } else {
+        console.log('ℹ️ Loja encontrada:', store.name);
       }
 
       // 3. Process promotions
@@ -75,33 +83,59 @@ export class SyncPromotionsUseCase {
         )
       );
 
+      console.log(`📦 Processando ${promotions.length} promoções...`);
+
       // 4. Save promotions
       const savedPromotions = await this.promotionRepository.saveMany(promotions);
+      
+      console.log(`✅ ${savedPromotions.length} promoções salvas com sucesso`);
 
-       // NOVO: Enviar notificações push
+      // 5. Enviar notificações push (CORRIGIDO: verificar se não é null)
       if (savedPromotions.length > 0) {
-        // Executar notificações de forma assíncrona para não afetar a resposta
-        this.sendPromotionNotificationUseCase.execute(savedPromotions, store)
-          .catch(error => console.error('Failed to send notifications:', error));
+        if (this.sendPromotionNotificationUseCase) {
+          console.log('📨 Iniciando envio de notificações push...');
+          
+          // Executar notificações de forma assíncrona para não afetar a resposta
+          this.sendPromotionNotificationUseCase.execute(savedPromotions, store)
+            .then(() => {
+              console.log('✅ Notificações push enviadas com sucesso');
+            })
+            .catch(error => {
+              console.error('❌ Erro ao enviar notificações push:', error);
+              // Não quebrar o processo de sync por causa das notificações
+            });
+        } else {
+          console.log('⚠️ Serviço de notificações não disponível - notificações não enviadas');
+          console.log('💡 Para habilitar notificações, configure EXPO_ACCESS_TOKEN no .env');
+        }
+      } else {
+        console.log('ℹ️ Nenhuma promoção nova para notificar');
       }
 
-      // 5. Return response
-      return {
+      // 6. Return response
+      const response: SyncResponseDTO = {
         success: true,
         message: `Successfully synced ${savedPromotions.length} promotions for store ${store.name}`,
         timestamp: new Date().toISOString(),
         totalSynced: savedPromotions.length
       };
-    } catch (error) {
-      console.error('Error syncing promotions:', error);
+
+      console.log('🎉 Sincronização concluída com sucesso:', response);
+      return response;
       
-      return {
+    } catch (error) {
+      console.error('❌ Erro durante sincronização:', error);
+      
+      const errorResponse: SyncResponseDTO = {
         success: false,
         message: error instanceof Error ? error.message : 'Unknown error occurred',
         timestamp: new Date().toISOString(),
         totalSynced: 0,
         errors: [error instanceof Error ? error.message : 'Unknown error']
       };
+
+      console.log('💥 Sincronização falhou:', errorResponse);
+      return errorResponse;
     }
   }
 }
