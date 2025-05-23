@@ -1,5 +1,5 @@
 // src/main/server.ts - VERSÃO ATUALIZADA PARA EXPO
-import express, {Request, Response, NextFunction} from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { SequelizeDatabase } from '../infrastructure/database/sequelize-database';
@@ -45,6 +45,10 @@ import { NotificationSchedulerService } from '../infrastructure/services/notific
 import { SendPromotionNotificationUseCase } from '../application/use-cases/notifications/send-promotion-notification.use-case';
 import { ValidateTokenUseCase } from '../application/use-cases/auth/validate-token.use-case';
 import { GetPromotionDetailsUseCase } from '../application/use-cases/get-promotion-details.use-case';
+import { LogoutUseCase } from '../application/use-cases/auth/logout.use-case';
+import { RefreshTokenUseCase } from '../application/use-cases/auth/refresh-token.use-case';
+import { RefreshTokenRepository } from '../infrastructure/repositories/refresh-token-repository';
+import { RefreshTokenModel } from '../infrastructure/database/models/refresh-token.model';
 
 async function bootstrap() {
   try {
@@ -63,6 +67,7 @@ async function bootstrap() {
     CustomerModel.initialize(database.getSequelize());
     FavoriteModel.initialize(database.getSequelize());
     DeviceTokenModel.initialize(database.getSequelize());
+    RefreshTokenModel.initialize(database.getSequelize()); // <- NOVO
     DeviceTokenModel.associate?.();
 
     // Create repositories
@@ -73,24 +78,25 @@ async function bootstrap() {
     const customerRepository = new CustomerRepository();
     const favoriteRepository = new FavoriteRepository();
     const deviceTokenRepository = new DeviceTokenRepository();
+    const refreshTokenRepository = new RefreshTokenRepository(); // <- NOVO
 
     // Criar serviço de autenticação
-    const authService = new AuthService(authConfig.jwtSecret, authConfig.jwtExpiresIn);
+    const authService = new AuthService(authConfig.jwtSecret, authConfig.jwtExpiresIn, authConfig.refreshTokenSecret, authConfig.refreshTokenExpiresIn);
 
     // NOVO: Configurar Expo Push Service
     let expoPushService: ExpoPushService | null = null;
     let notificationScheduler: NotificationSchedulerService | null = null;
     let sendPromotionNotificationUseCase: SendPromotionNotificationUseCase | null = null;
-    
+
     // Verificar se o Expo Access Token está configurado
     if (process.env.EXPO_ACCESS_TOKEN) {
       try {
         console.log('🔧 Configurando Expo Push Service...');
         expoPushService = new ExpoPushService(deviceTokenRepository);
-        
+
         // Verificar se o serviço está funcionando
         const isHealthy = await expoPushService.healthCheck();
-        
+
         if (isHealthy) {
           // Criar serviço de notificações para promoções
           sendPromotionNotificationUseCase = new SendPromotionNotificationUseCase(
@@ -105,7 +111,7 @@ async function bootstrap() {
             deviceTokenRepository,
             expoPushService
           );
-          
+
           // Iniciar scheduler apenas em produção ou se explicitamente configurado
           if (process.env.NODE_ENV === 'production' || process.env.START_SCHEDULER === 'true') {
             notificationScheduler.startScheduler();
@@ -115,7 +121,7 @@ async function bootstrap() {
           console.log('🔔 Push notifications: HABILITADAS');
           console.log('🔧 Validação de tokens: HABILITADA');
           console.log('🧹 Limpeza automática: HABILITADA');
-          
+
           if (process.env.PUSH_NOTIFICATIONS_DEBUG === 'true') {
             console.log('🐛 Debug mode: HABILITADO');
           }
@@ -169,20 +175,31 @@ async function bootstrap() {
     const registerUserUseCase = new RegisterUserUseCase(
       userRepository,
       storeRepository,
+      refreshTokenRepository, // <- ADICIONADO
       authService
     );
 
     const loginUserUseCase = new LoginUserUseCase(
       userRepository,
+      refreshTokenRepository, // <- ADICIONADO
       authService
     );
 
     const registerCustomerUseCase = new RegisterCustomerUseCase(
       customerRepository,
+      refreshTokenRepository, // <- ADICIONADO
       authService
     );
 
     const loginCustomerUseCase = new LoginCustomerUseCase(
+      customerRepository,
+      refreshTokenRepository, // <- ADICIONADO
+      authService
+    );
+    // NOVO: RefreshTokenUseCase
+    const refreshTokenUseCase = new RefreshTokenUseCase(
+      refreshTokenRepository,
+      userRepository,
       customerRepository,
       authService
     );
@@ -193,6 +210,9 @@ async function bootstrap() {
       customerRepository,
       authService
     );
+
+    // NOVO: Adicionar LogoutUseCase
+    const logoutUseCase = new LogoutUseCase(authService);
 
     const addFavoriteUseCase = new AddFavoriteUseCase(
       favoriteRepository,
@@ -215,13 +235,15 @@ async function bootstrap() {
       getPromotionDetailsUseCase  // <- ADICIONADO
     );
 
-    // ATUALIZAR: AuthController com o novo use case
+    // ATUALIZAR: AuthController com RefreshTokenUseCase
     const authController = new AuthController(
       registerUserUseCase,
       loginUserUseCase,
       registerCustomerUseCase,
       loginCustomerUseCase,
-      validateTokenUseCase  // <- ADICIONADO
+      validateTokenUseCase,
+      logoutUseCase,
+      refreshTokenUseCase // <- ADICIONADO
     );
 
     const favoriteController = new FavoriteController(
@@ -265,7 +287,7 @@ async function bootstrap() {
           expoStats = await expoPushService.getServiceStats();
         }
 
-        res.status(200).json({ 
+        res.status(200).json({
           status: 'UP',
           timestamp: new Date().toISOString(),
           version: '1.0.0',
@@ -311,7 +333,7 @@ async function bootstrap() {
       }
 
       if (!expoPushService) {
-        res.status(503).json({ 
+        res.status(503).json({
           success: false,
           message: 'Expo Push Service not available',
           code: 'SERVICE_UNAVAILABLE'
@@ -320,20 +342,20 @@ async function bootstrap() {
       }
 
       try {
-        const result = notificationScheduler 
+        const result = notificationScheduler
           ? await notificationScheduler.sendTestNotification()
           : { success: false, tokensUsed: 0 };
-        
+
         res.json({
           success: result.success,
-          message: result.success 
-            ? `Test notification sent to ${result.tokensUsed} devices` 
+          message: result.success
+            ? `Test notification sent to ${result.tokensUsed} devices`
             : 'Failed to send test notification',
           data: result
         });
       } catch (error) {
         console.error('❌ Erro ao enviar notificação de teste:', error);
-        res.status(500).json({ 
+        res.status(500).json({
           success: false,
           message: 'Error sending test notification',
           error: error instanceof Error ? error.message : 'Unknown error'
@@ -348,7 +370,7 @@ async function bootstrap() {
       }
 
       if (!notificationScheduler) {
-        res.status(503).json({ 
+        res.status(503).json({
           success: false,
           message: 'Notification Scheduler not available',
           code: 'SERVICE_UNAVAILABLE'
@@ -358,7 +380,7 @@ async function bootstrap() {
 
       try {
         const result = await notificationScheduler.runImmediateCleanup();
-        
+
         res.json({
           success: true,
           message: 'Cleanup completed successfully',
@@ -366,7 +388,7 @@ async function bootstrap() {
         });
       } catch (error) {
         console.error('❌ Erro na limpeza administrativa:', error);
-        res.status(500).json({ 
+        res.status(500).json({
           success: false,
           message: 'Error during cleanup',
           error: error instanceof Error ? error.message : 'Unknown error'
@@ -406,7 +428,7 @@ async function bootstrap() {
         });
       } catch (error) {
         console.error('❌ Erro ao obter estatísticas:', error);
-        res.status(500).json({ 
+        res.status(500).json({
           success: false,
           message: 'Error retrieving statistics',
           error: error instanceof Error ? error.message : 'Unknown error'
@@ -440,14 +462,14 @@ async function bootstrap() {
       console.log(`📡 Servidor rodando em http://localhost:${port}`);
       console.log(`🏥 Health check disponível em http://localhost:${port}/api/health`);
       console.log('');
-      
+
       // Status das funcionalidades
       console.log('📋 Status dos Serviços:');
       if (expoPushService) {
         console.log('  🔔 Push Notifications: ✅ HABILITADAS (Expo)');
         console.log('  🔧 Validação de Tokens: ✅ HABILITADA');
         console.log('  🧹 Limpeza Automática: ✅ HABILITADA');
-        
+
         if (notificationScheduler?.getSchedulerStatus().isRunning) {
           console.log('  ⏰ Agendador: ✅ ATIVO');
         } else {
@@ -457,7 +479,7 @@ async function bootstrap() {
         console.log('  📵 Push Notifications: ❌ DESABILITADAS');
         console.log('  💡 Configure EXPO_ACCESS_TOKEN para habilitar');
       }
-      
+
       console.log('');
       console.log('🌐 Endpoints Principais:');
       console.log('  📱 Mobile App:');
@@ -484,18 +506,18 @@ async function bootstrap() {
     // Handle graceful shutdown
     const gracefulShutdown = async (signal: string) => {
       console.log(`📤 Recebido ${signal}. Encerrando graciosamente...`);
-      
+
       try {
         // Parar scheduler se estiver rodando
         if (notificationScheduler) {
           console.log('⏰ Parando notification scheduler...');
           notificationScheduler.stopScheduler();
         }
-        
+
         // Fechar conexão com o banco
         console.log('🗄️ Fechando conexão com banco de dados...');
         await database.getSequelize().close();
-        
+
         console.log('👋 Servidor encerrado com sucesso');
         process.exit(0);
       } catch (error) {

@@ -1,4 +1,4 @@
-// src/application/dto/auth/customer-auth-result-dto.ts
+// src/application/dto/auth/customer-auth-result-dto.ts - VERSÃO ATUALIZADA
 export interface CustomerAuthResultDTO {
   token: string;
   customer: {
@@ -7,4 +7,10 @@ export interface CustomerAuthResultDTO {
     email: string;
     phone?: string;
   };
+}
+
+// NOVO: CustomerAuthResult com refresh token
+export interface CustomerAuthResultWithRefreshDTO extends CustomerAuthResultDTO {
+  refreshToken: string;
+  expiresIn: string;
 }

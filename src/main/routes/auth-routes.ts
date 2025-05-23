@@ -28,6 +28,16 @@ export default (controller: AuthController): Router => {
     body('phone').optional().isMobilePhone('any').withMessage('Valid phone number is required')
   ];
 
+  // NOVO: Validação para refresh token
+  const refreshTokenValidation = [
+    body('refreshToken').notEmpty().withMessage('Refresh token is required')
+  ];
+
+  // NOVO: Validação para revogar token
+  const revokeTokenValidation = [
+    body('refreshToken').notEmpty().withMessage('Refresh token is required')
+  ];
+
   // Web Panel Auth Routes
   router.post(
     '/register',
@@ -58,6 +68,38 @@ export default (controller: AuthController): Router => {
   router.post(
     '/validate-token',
     (req, res) => controller.validateToken(req, res)
+  );
+
+  // NOVO: Logout Route (funciona para ambos: web e mobile)
+  router.post(
+    '/logout',
+    (req, res) => controller.logout(req, res)
+  );
+
+  // NOVO: Refresh Token Route (funciona para ambos: web e mobile)
+  router.post(
+    '/refresh-token',
+    validateRequest(refreshTokenValidation),
+    (req, res) => controller.refreshToken(req, res)
+  );
+
+  // NOVO: Revoke Refresh Token Route (funciona para ambos: web e mobile)
+  router.post(
+    '/revoke-token',
+    validateRequest(revokeTokenValidation),
+    (req, res) => controller.revokeRefreshToken(req, res)
+  );
+
+  // NOVO: Revoke All Tokens Route (requer autenticação)
+  router.post(
+    '/revoke-all-tokens',
+    (req, res) => controller.revokeAllTokens(req, res)
+  );
+
+  // NOVO: Get User Tokens Route (útil para debug, requer autenticação)
+  router.get(
+    '/tokens',
+    (req, res) => controller.getUserTokens(req, res)
   );
 
   return router;
